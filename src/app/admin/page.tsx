@@ -25,12 +25,24 @@ type WithdrawalRow = {
   paid_at: string | null
 }
 
+type UserRow = {
+  id: string
+  email: string
+  role: string
+  created_at: string
+  is_withdraw_blocked: boolean
+  balance: number
+}
+
 export default function AdminPage() {
   const [loading, setLoading] = useState(true)
   const [allowed, setAllowed] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<'users' | 'withdrawals' | 'audit'>('users')
+  
   const [audit, setAudit] = useState<AuditLogRow[]>([])
   const [withdrawals, setWithdrawals] = useState<WithdrawalRow[]>([])
+  const [users, setUsers] = useState<UserRow[]>([])
 
   const refresh = async () => {
     setError(null)
@@ -56,22 +68,21 @@ export default function AdminPage() {
     }
     setAllowed(true)
 
-    const [a, w] = await Promise.all([
+    const [a, w, u] = await Promise.all([
       fetch('/api/admin/audit', { headers: { Authorization: `Bearer ${token}` } }),
       fetch('/api/admin/withdrawals', { headers: { Authorization: `Bearer ${token}` } }),
+      fetch('/api/admin/users', { headers: { Authorization: `Bearer ${token}` } }),
     ])
-    if (!a.ok) {
-      setError(await a.text())
+    
+    if (!a.ok || !w.ok || !u.ok) {
+      setError('Gagal memuat data.')
       setLoading(false)
       return
     }
-    if (!w.ok) {
-      setError(await w.text())
-      setLoading(false)
-      return
-    }
+
     setAudit(((await a.json()) as { rows: AuditLogRow[] }).rows)
     setWithdrawals(((await w.json()) as { rows: WithdrawalRow[] }).rows)
+    setUsers(((await u.json()) as { users: UserRow[] }).users)
     setLoading(false)
   }
 
@@ -82,7 +93,19 @@ export default function AdminPage() {
         setLoading(false)
       })
     }, 0)
-    return () => clearTimeout(t)
+    
+    // Set up Realtime Subscription
+    const supabase = getSupabaseBrowser()
+    const channel = supabase
+      .channel('admin-dashboard')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'kograph_withdrawals' }, () => refresh())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'kograph_balance_ledger' }, () => refresh()) // To update balances
+      .subscribe()
+
+    return () => {
+      clearTimeout(t)
+      supabase.removeChannel(channel)
+    }
   }, [])
 
   const updateWithdrawal = async (id: string, status: 'approved' | 'rejected' | 'paid') => {
@@ -91,23 +114,49 @@ export default function AdminPage() {
       const supabase = getSupabaseBrowser()
       const { data } = await supabase.auth.getSession()
       const token = data.session?.access_token
-      if (!token) {
-        setError('Silakan login.')
-        return
-      }
+      if (!token) return
+
       const r = await fetch('/api/admin/withdrawals/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ id, status }),
       })
-      const j = await r.json().catch(() => null)
       if (!r.ok) {
+        const j = await r.json()
         setError(j?.error ?? 'Gagal update withdraw.')
-        return
+      } else {
+        await refresh()
       }
-      await refresh()
     } catch {
       setError('Gagal update withdraw.')
+    }
+  }
+
+  const handleUserAction = async (userId: string, action: string, message?: string) => {
+    if (action === 'warn' && !message) return
+    if (!confirm('Apakah Anda yakin melakukan tindakan ini?')) return
+
+    try {
+      const supabase = getSupabaseBrowser()
+      const { data } = await supabase.auth.getSession()
+      const token = data.session?.access_token
+      if (!token) return
+
+      const r = await fetch('/api/admin/users/action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ userId, action, message }),
+      })
+
+      if (!r.ok) {
+        const j = await r.json()
+        alert(j.error || 'Gagal melakukan aksi')
+      } else {
+        alert('Sukses!')
+        await refresh()
+      }
+    } catch {
+      alert('Gagal melakukan aksi')
     }
   }
 
@@ -133,8 +182,16 @@ export default function AdminPage() {
   return (
     <div className="container" style={{ padding: '32px 0', display: 'grid', gap: 16 }}>
       <div className="card" style={{ display: 'grid', gap: 6 }}>
-        <div style={{ fontWeight: 950, fontSize: 22 }}>Dashboard Admin</div>
-        <div style={{ color: 'var(--muted)' }}>Monitor aktivitas user dan withdraw untuk mencegah penyalahgunaan.</div>
+        <div style={{ fontWeight: 950, fontSize: 22 }}>Admin Dashboard</div>
+        <div style={{ color: 'var(--muted)' }}>
+          Kelola user, withdrawal, dan keamanan sistem secara realtime.
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 4 }}>
+        <button className={`btn ${activeTab === 'users' ? 'btn-primary' : ''}`} onClick={() => setActiveTab('users')}>Users</button>
+        <button className={`btn ${activeTab === 'withdrawals' ? 'btn-primary' : ''}`} onClick={() => setActiveTab('withdrawals')}>Withdrawals</button>
+        <button className={`btn ${activeTab === 'audit' ? 'btn-primary' : ''}`} onClick={() => setActiveTab('audit')}>Audit Log</button>
       </div>
 
       {error && (
@@ -144,78 +201,90 @@ export default function AdminPage() {
         </div>
       )}
 
-      <div className="card" style={{ display: 'grid', gap: 12 }}>
-        <div style={{ fontWeight: 900, fontSize: 16 }}>Withdraw Requests</div>
-        <div style={{ display: 'grid', gap: 10 }}>
-          {withdrawals.length === 0 && <div style={{ color: 'var(--muted)' }}>Tidak ada withdraw.</div>}
-          {withdrawals.map((w) => (
-            <div
-              key={w.id}
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                gap: 12,
-                flexWrap: 'wrap',
-                padding: 12,
-                borderRadius: 14,
-                border: '1px solid rgba(2, 6, 23, 0.10)',
-                background: 'rgba(2, 6, 23, 0.02)',
-              }}
-            >
-              <div style={{ display: 'grid', gap: 2 }}>
-                <div style={{ fontWeight: 900 }}>Rp {Number(w.amount).toLocaleString('id-ID')}</div>
-                <div style={{ color: 'var(--muted)', fontSize: 12 }}>User {w.user_id}</div>
-                <div style={{ color: 'var(--muted)', fontSize: 12 }}>{w.note ?? '—'}</div>
+      {activeTab === 'users' && (
+        <div className="card" style={{ display: 'grid', gap: 12 }}>
+          <div style={{ fontWeight: 900, fontSize: 16 }}>Daftar Pengguna ({users.length})</div>
+          <div style={{ display: 'grid', gap: 10 }}>
+            {users.map((u) => (
+              <div key={u.id} style={{ padding: 12, borderRadius: 14, border: '1px solid rgba(2, 6, 23, 0.10)', background: 'rgba(2, 6, 23, 0.02)', display: 'grid', gap: 8 }}>
+                 <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+                    <div>
+                      <div style={{ fontWeight: 800 }}>{u.email}</div>
+                      <div style={{ color: 'var(--muted)', fontSize: 12 }}>ID: {u.id}</div>
+                      <div style={{ marginTop: 4, fontWeight: 700, color: u.is_withdraw_blocked ? 'red' : 'green' }}>
+                        {u.is_withdraw_blocked ? 'Withdraw Blocked' : 'Active'}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                       <div style={{ fontSize: 12, color: 'var(--muted)' }}>Saldo</div>
+                       <div style={{ fontWeight: 900, fontSize: 18 }}>Rp {u.balance.toLocaleString('id-ID')}</div>
+                    </div>
+                 </div>
+                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+                    <button className="btn" onClick={() => {
+                        const msg = prompt('Masukkan pesan peringatan:')
+                        if (msg) handleUserAction(u.id, 'warn', msg)
+                    }}>Beri Peringatan</button>
+                    
+                    {u.is_withdraw_blocked ? (
+                        <button className="btn btn-primary" onClick={() => handleUserAction(u.id, 'unblock_withdraw')}>Buka Blokir WD</button>
+                    ) : (
+                        <button className="btn" style={{ background: '#fee2e2', color: '#ef4444', borderColor: '#fca5a5' }} onClick={() => handleUserAction(u.id, 'block_withdraw')}>Blokir WD</button>
+                    )}
+                 </div>
               </div>
-              <div style={{ display: 'grid', gap: 8, justifyItems: 'end' }}>
-                <div style={{ fontWeight: 850 }}>{w.status}</div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                  <button className="btn" disabled={w.status !== 'requested'} onClick={() => updateWithdrawal(w.id, 'approved')}>
-                    Approve
-                  </button>
-                  <button className="btn" disabled={w.status !== 'requested'} onClick={() => updateWithdrawal(w.id, 'rejected')}>
-                    Reject
-                  </button>
-                  <button className="btn btn-primary" disabled={w.status !== 'approved'} onClick={() => updateWithdrawal(w.id, 'paid')}>
-                    Mark Paid
-                  </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'withdrawals' && (
+        <div className="card" style={{ display: 'grid', gap: 12 }}>
+          <div style={{ fontWeight: 900, fontSize: 16 }}>Permintaan Withdraw</div>
+          <div style={{ display: 'grid', gap: 10 }}>
+            {withdrawals.length === 0 && <div style={{ color: 'var(--muted)' }}>Tidak ada withdraw.</div>}
+            {withdrawals.map((w) => (
+              <div key={w.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', padding: 12, borderRadius: 14, border: '1px solid rgba(2, 6, 23, 0.10)', background: 'rgba(2, 6, 23, 0.02)' }}>
+                <div style={{ display: 'grid', gap: 2 }}>
+                  <div style={{ fontWeight: 900 }}>Rp {Number(w.amount).toLocaleString('id-ID')}</div>
+                  <div style={{ color: 'var(--muted)', fontSize: 12 }}>User {w.user_id}</div>
+                  <div style={{ color: 'var(--muted)', fontSize: 12 }}>{w.note ?? '—'}</div>
+                </div>
+                <div style={{ display: 'grid', gap: 8, justifyItems: 'end' }}>
+                  <div style={{ fontWeight: 850 }}>{w.status}</div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    <button className="btn" disabled={w.status !== 'requested'} onClick={() => updateWithdrawal(w.id, 'approved')}>Approve</button>
+                    <button className="btn" disabled={w.status !== 'requested'} onClick={() => updateWithdrawal(w.id, 'rejected')}>Reject</button>
+                    <button className="btn btn-primary" disabled={w.status !== 'approved'} onClick={() => updateWithdrawal(w.id, 'paid')}>Mark Paid</button>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="card" style={{ display: 'grid', gap: 12 }}>
-        <div style={{ fontWeight: 900, fontSize: 16 }}>Audit Log</div>
-        <div style={{ display: 'grid', gap: 10 }}>
-          {audit.length === 0 && <div style={{ color: 'var(--muted)' }}>Belum ada audit log.</div>}
-          {audit.map((a) => (
-            <div
-              key={a.id}
-              style={{
-                padding: 12,
-                borderRadius: 14,
-                border: '1px solid rgba(2, 6, 23, 0.10)',
-                background: 'rgba(2, 6, 23, 0.02)',
-                display: 'grid',
-                gap: 4,
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-                <div style={{ fontWeight: 900 }}>{a.action}</div>
-                <div style={{ color: 'var(--muted)', fontSize: 12 }}>{new Date(a.created_at).toLocaleString('id-ID')}</div>
-              </div>
-              <div style={{ color: 'var(--muted)', fontSize: 12 }}>
-                actor {a.actor_user_id ?? '—'} · subject {a.subject_user_id ?? '—'}
-              </div>
-              <div style={{ color: 'var(--muted)', fontSize: 12, wordBreak: 'break-word' }}>
-                {a.ip ?? '—'} · {(a.user_agent ?? '—').slice(0, 120)}
-              </div>
-            </div>
-          ))}
+      {activeTab === 'audit' && (
+        <div className="card" style={{ display: 'grid', gap: 12 }}>
+           <div style={{ fontWeight: 900, fontSize: 16 }}>Audit Log</div>
+           <div style={{ display: 'grid', gap: 10 }}>
+            {audit.map((a) => (
+               <div key={a.id} style={{ padding: 12, borderRadius: 14, border: '1px solid rgba(2, 6, 23, 0.10)', background: 'rgba(2, 6, 23, 0.02)', display: 'grid', gap: 4 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                    <div style={{ fontWeight: 900 }}>{a.action}</div>
+                    <div style={{ color: 'var(--muted)', fontSize: 12 }}>{new Date(a.created_at).toLocaleString('id-ID')}</div>
+                  </div>
+                  <div style={{ color: 'var(--muted)', fontSize: 12 }}>
+                    actor {a.actor_user_id ?? '—'} · subject {a.subject_user_id ?? '—'}
+                  </div>
+                  <div style={{ color: 'var(--muted)', fontSize: 12, wordBreak: 'break-word' }}>
+                    {JSON.stringify(a.details)}
+                  </div>
+               </div>
+            ))}
+           </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }

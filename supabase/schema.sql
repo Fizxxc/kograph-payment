@@ -4,6 +4,7 @@ create table public.profiles (
   id uuid references auth.users on delete cascade not null primary key,
   email text,
   role text default 'user',
+  is_withdraw_blocked boolean default false,
   created_at timestamptz default now()
 );
 alter table public.profiles enable row level security;
@@ -84,6 +85,18 @@ create table public.kograph_audit_logs (
 alter table public.kograph_audit_logs enable row level security;
 create index kograph_audit_logs_created_at_idx on public.kograph_audit_logs(created_at desc);
 
+create table public.kograph_notifications (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid references auth.users(id) on delete cascade not null,
+  title text not null,
+  message text not null,
+  is_read boolean default false,
+  created_at timestamptz default now()
+);
+alter table public.kograph_notifications enable row level security;
+
+-- POLICIES
+
 create policy "Profiles readable by owner and admin" on public.profiles
   for select using (
     auth.uid() = id
@@ -96,6 +109,11 @@ create policy "Profiles insertable by owner" on public.profiles
 
 create policy "Profiles updatable by owner" on public.profiles
   for update using (auth.uid() = id);
+
+create policy "Profiles update by admin" on public.profiles
+  for update using (
+    (select role from profiles where id = auth.uid()) = 'admin'
+  );
 
 create policy "Kograph settings readable by owner and admin" on public.kograph_user_settings
   for select using (
@@ -165,6 +183,20 @@ create policy "Kograph audit readable by admin and service role" on public.kogra
 create policy "Kograph audit insert by service role" on public.kograph_audit_logs
   for insert with check (auth.role() = 'service_role');
 
+create policy "Notifications readable by owner" on public.kograph_notifications
+  for select using (auth.uid() = user_id);
+
+create policy "Notifications update by owner" on public.kograph_notifications
+  for update using (auth.uid() = user_id);
+  
+create policy "Notifications insert by admin/service" on public.kograph_notifications
+  for insert with check (
+    auth.role() = 'service_role' or 
+    (select role from profiles where id = auth.uid()) = 'admin'
+  );
+
+-- FUNCTIONS & TRIGGERS
+
 create or replace function public.kograph_set_updated_at()
 returns trigger as $$
 begin
@@ -186,8 +218,8 @@ for each row execute procedure public.kograph_set_updated_at();
 create or replace function public.handle_new_user()
 returns trigger as $$
 begin
-  insert into public.profiles (id, email, role)
-  values (new.id, new.email, 'user')
+  insert into public.profiles (id, email, role, is_withdraw_blocked)
+  values (new.id, new.email, 'user', false)
   on conflict (id) do nothing;
   insert into public.kograph_user_settings (user_id)
   values (new.id)

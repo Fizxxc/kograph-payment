@@ -28,6 +28,7 @@ export default function RootLayout({
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
         <TopNav />
         <main className="page">{children}</main>
+        <SupportWidget />
       </body>
     </html>
   );

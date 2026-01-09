@@ -53,15 +53,8 @@ export async function POST(req: Request) {
 
     if (updErr) return NextResponse.json({ error: 'update_failed' }, { status: 500 })
 
-    const { error: ledgerErr } = await server.from('kograph_balance_ledger').insert({
-      user_id: w.user_id,
-      checkout_id: null,
-      entry_type: 'withdrawal',
-      amount: -Math.abs(Number(w.amount)),
-      meta: { withdrawal_id: w.id },
-    })
-
-    if (ledgerErr) return NextResponse.json({ error: 'ledger_failed' }, { status: 500 })
+    // Balance already deducted at request time. No ledger entry needed here unless we want to track 'payout' separately, 
+    // but the balance reduction happened at 'request'.
 
     await server.from('kograph_audit_logs').insert({
       actor_user_id: actorId,
@@ -79,6 +72,7 @@ export async function POST(req: Request) {
     if (w.status !== 'requested') return NextResponse.json({ error: 'invalid_transition' }, { status: 400 })
     const { error: updErr } = await server.from('kograph_withdrawals').update({ status: 'approved' }).eq('id', id).eq('status', 'requested')
     if (updErr) return NextResponse.json({ error: 'update_failed' }, { status: 500 })
+    
     await server.from('kograph_audit_logs').insert({
       actor_user_id: actorId,
       subject_user_id: w.user_id,
@@ -92,8 +86,21 @@ export async function POST(req: Request) {
 
   if (status === 'rejected') {
     if (w.status !== 'requested') return NextResponse.json({ error: 'invalid_transition' }, { status: 400 })
+    
+    // Refund the balance
+    const { error: ledgerErr } = await server.from('kograph_balance_ledger').insert({
+        user_id: w.user_id,
+        checkout_id: null,
+        entry_type: 'withdrawal_refund',
+        amount: Math.abs(Number(w.amount)), // Add back the amount
+        meta: { withdrawal_id: w.id, reason: 'rejected' },
+    })
+
+    if (ledgerErr) return NextResponse.json({ error: 'refund_failed' }, { status: 500 })
+
     const { error: updErr } = await server.from('kograph_withdrawals').update({ status: 'rejected' }).eq('id', id).eq('status', 'requested')
     if (updErr) return NextResponse.json({ error: 'update_failed' }, { status: 500 })
+
     await server.from('kograph_audit_logs').insert({
       actor_user_id: actorId,
       subject_user_id: w.user_id,
