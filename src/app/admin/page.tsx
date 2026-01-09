@@ -248,6 +248,16 @@ export default function AdminPage() {
                 <div style={{ display: 'grid', gap: 2 }}>
                   <div style={{ fontWeight: 900 }}>Rp {Number(w.amount).toLocaleString('id-ID')}</div>
                   <div style={{ color: 'var(--muted)', fontSize: 12 }}>User {w.user_id}</div>
+                  
+                  {/* Destination Details */}
+                  <div style={{ margin: '4px 0', padding: '4px 8px', background: 'rgba(0,0,0,0.05)', borderRadius: 6, width: 'fit-content' }}>
+                    <div style={{ fontWeight: 800, fontSize: 13 }}>
+                      {w.channel_code || 'MANUAL'} 
+                      {w.channel_category ? ` (${w.channel_category})` : ''}
+                    </div>
+                    <div style={{ fontFamily: 'monospace', fontSize: 14 }}>{w.account_number}</div>
+                  </div>
+
                   <div style={{ color: 'var(--muted)', fontSize: 12 }}>{w.note ?? '—'}</div>
                 </div>
                 <div style={{ display: 'grid', gap: 8, justifyItems: 'end' }}>

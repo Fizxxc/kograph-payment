@@ -95,7 +95,20 @@ export default function DashboardPage() {
         setLoading(false)
       })
     }, 0)
-    return () => clearTimeout(t)
+
+    // Realtime Subscription
+    const supabase = getSupabaseBrowser()
+    const channel = supabase
+      .channel('user-dashboard')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'kograph_withdrawals' }, () => refresh())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'kograph_balance_ledger' }, () => refresh())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'kograph_checkouts' }, () => refresh())
+      .subscribe()
+
+    return () => {
+      clearTimeout(t)
+      supabase.removeChannel(channel)
+    }
   }, [])
 
   const createKey = async () => {
@@ -219,7 +232,13 @@ export default function DashboardPage() {
       const r = await fetch('/api/withdrawals/request', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ amount: withdrawAmount, note: withdrawNote || null }),
+        body: JSON.stringify({ 
+          amount: withdrawAmount, 
+          note: withdrawNote || null,
+          channel_category: channelCategory,
+          channel_code: channelCode,
+          account_number: accountNumber
+        }),
       })
       const j = await r.json().catch(() => null)
       if (!r.ok) {
@@ -402,16 +421,53 @@ export default function DashboardPage() {
         <div className="card grid" style={{ gap: 12 }}>
           <div className="h2">Withdraw</div>
           <div style={{ display: 'grid', gap: 10, maxWidth: 520 }}>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button 
+                className={`btn ${channelCategory === 'ewallet' ? 'btn-primary' : ''}`} 
+                onClick={() => { setChannelCategory('ewallet'); setChannelCode('GOPAY'); }}
+                style={{ flex: 1 }}
+              >
+                E-Wallet (Min 1rb)
+              </button>
+              <button 
+                className={`btn ${channelCategory === 'bank' ? 'btn-primary' : ''}`} 
+                onClick={() => { setChannelCategory('bank'); setChannelCode('BCA'); }}
+                style={{ flex: 1 }}
+              >
+                Bank (Min 15rb)
+              </button>
+            </div>
+
+            <select 
+              className="input" 
+              value={channelCode} 
+              onChange={(e) => setChannelCode(e.target.value)}
+            >
+              {channelCategory === 'ewallet' 
+                ? EWALLETS.map(w => <option key={w.code} value={w.code}>{w.name}</option>)
+                : BANKS.map(b => <option key={b.code} value={b.code}>{b.name}</option>)
+              }
+            </select>
+
+            <input 
+              className="input" 
+              placeholder="Nomor Rekening / E-Wallet" 
+              value={accountNumber} 
+              onChange={(e) => setAccountNumber(e.target.value)} 
+            />
+
             <input
               className="input"
               type="number"
-              min={1000}
+              min={channelCategory === 'ewallet' ? 1000 : 15000}
               step={1000}
               value={withdrawAmount}
               onChange={(e) => setWithdrawAmount(Number(e.target.value))}
               placeholder="Nominal withdraw"
             />
+            
             <input className="input" value={withdrawNote} onChange={(e) => setWithdrawNote(e.target.value)} placeholder="Catatan (opsional)" />
+            
             <button className="btn btn-primary" onClick={requestWithdraw}>
               Ajukan Withdraw
             </button>

@@ -1,15 +1,24 @@
 create extension if not exists pgcrypto;
 
-create table public.profiles (
+create table if not exists public.profiles (
   id uuid references auth.users on delete cascade not null primary key,
   email text,
   role text default 'user',
   is_withdraw_blocked boolean default false,
   created_at timestamptz default now()
 );
+
+-- Ensure columns exist (idempotent update)
+do $$ 
+begin
+  if not exists (select 1 from information_schema.columns where table_name = 'profiles' and column_name = 'is_withdraw_blocked') then
+    alter table public.profiles add column is_withdraw_blocked boolean default false;
+  end if;
+end $$;
+
 alter table public.profiles enable row level security;
 
-create table public.kograph_user_settings (
+create table if not exists public.kograph_user_settings (
   user_id uuid references auth.users(id) on delete cascade not null primary key,
   default_amount numeric default 10000,
   created_at timestamptz default now(),
@@ -17,7 +26,7 @@ create table public.kograph_user_settings (
 );
 alter table public.kograph_user_settings enable row level security;
 
-create table public.kograph_api_keys (
+create table if not exists public.kograph_api_keys (
   id uuid default gen_random_uuid() primary key,
   user_id uuid references auth.users(id) on delete cascade not null,
   name text not null,
@@ -27,9 +36,9 @@ create table public.kograph_api_keys (
   created_at timestamptz default now()
 );
 alter table public.kograph_api_keys enable row level security;
-create index kograph_api_keys_user_id_idx on public.kograph_api_keys(user_id);
+create index if not exists kograph_api_keys_user_id_idx on public.kograph_api_keys(user_id);
 
-create table public.kograph_checkouts (
+create table if not exists public.kograph_checkouts (
   id uuid default gen_random_uuid() primary key,
   user_id uuid references auth.users(id) on delete cascade not null,
   api_key_id uuid references public.kograph_api_keys(id) on delete set null,
@@ -43,10 +52,10 @@ create table public.kograph_checkouts (
   paid_at timestamptz
 );
 alter table public.kograph_checkouts enable row level security;
-create index kograph_checkouts_user_id_idx on public.kograph_checkouts(user_id);
-create index kograph_checkouts_status_idx on public.kograph_checkouts(status);
+create index if not exists kograph_checkouts_user_id_idx on public.kograph_checkouts(user_id);
+create index if not exists kograph_checkouts_status_idx on public.kograph_checkouts(status);
 
-create table public.kograph_balance_ledger (
+create table if not exists public.kograph_balance_ledger (
   id uuid default gen_random_uuid() primary key,
   user_id uuid references auth.users(id) on delete cascade not null,
   checkout_id uuid references public.kograph_checkouts(id) on delete set null,
@@ -56,23 +65,41 @@ create table public.kograph_balance_ledger (
   created_at timestamptz default now()
 );
 alter table public.kograph_balance_ledger enable row level security;
-create index kograph_balance_ledger_user_id_idx on public.kograph_balance_ledger(user_id);
+create index if not exists kograph_balance_ledger_user_id_idx on public.kograph_balance_ledger(user_id);
 
-create table public.kograph_withdrawals (
+create table if not exists public.kograph_withdrawals (
   id uuid default gen_random_uuid() primary key,
   user_id uuid references auth.users(id) on delete cascade not null,
   amount numeric not null,
   status text default 'requested',
   note text,
+  channel_category text,
+  channel_code text,
+  account_number text,
   created_at timestamptz default now(),
   updated_at timestamptz default now(),
   paid_at timestamptz
 );
-alter table public.kograph_withdrawals enable row level security;
-create index kograph_withdrawals_user_id_idx on public.kograph_withdrawals(user_id);
-create index kograph_withdrawals_status_idx on public.kograph_withdrawals(status);
 
-create table public.kograph_audit_logs (
+-- Ensure withdrawal columns exist
+do $$ 
+begin
+  if not exists (select 1 from information_schema.columns where table_name = 'kograph_withdrawals' and column_name = 'channel_category') then
+    alter table public.kograph_withdrawals add column channel_category text;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_name = 'kograph_withdrawals' and column_name = 'channel_code') then
+    alter table public.kograph_withdrawals add column channel_code text;
+  end if;
+  if not exists (select 1 from information_schema.columns where table_name = 'kograph_withdrawals' and column_name = 'account_number') then
+    alter table public.kograph_withdrawals add column account_number text;
+  end if;
+end $$;
+
+alter table public.kograph_withdrawals enable row level security;
+create index if not exists kograph_withdrawals_user_id_idx on public.kograph_withdrawals(user_id);
+create index if not exists kograph_withdrawals_status_idx on public.kograph_withdrawals(status);
+
+create table if not exists public.kograph_audit_logs (
   id uuid default gen_random_uuid() primary key,
   actor_user_id uuid references auth.users(id) on delete set null,
   subject_user_id uuid references auth.users(id) on delete set null,
@@ -83,9 +110,9 @@ create table public.kograph_audit_logs (
   created_at timestamptz default now()
 );
 alter table public.kograph_audit_logs enable row level security;
-create index kograph_audit_logs_created_at_idx on public.kograph_audit_logs(created_at desc);
+create index if not exists kograph_audit_logs_created_at_idx on public.kograph_audit_logs(created_at desc);
 
-create table public.kograph_notifications (
+create table if not exists public.kograph_notifications (
   id uuid default gen_random_uuid() primary key,
   user_id uuid references auth.users(id) on delete cascade not null,
   title text not null,
@@ -96,6 +123,39 @@ create table public.kograph_notifications (
 alter table public.kograph_notifications enable row level security;
 
 -- POLICIES
+
+-- Drop all existing policies to avoid conflicts
+drop policy if exists "Profiles readable by owner and admin" on public.profiles;
+drop policy if exists "Profiles insertable by owner" on public.profiles;
+drop policy if exists "Profiles updatable by owner" on public.profiles;
+drop policy if exists "Profiles update by admin" on public.profiles;
+
+drop policy if exists "Kograph settings readable by owner and admin" on public.kograph_user_settings;
+drop policy if exists "Kograph settings insert by owner" on public.kograph_user_settings;
+drop policy if exists "Kograph settings update by owner" on public.kograph_user_settings;
+
+drop policy if exists "Kograph api keys readable by owner and admin" on public.kograph_api_keys;
+drop policy if exists "Kograph api keys insert by owner" on public.kograph_api_keys;
+drop policy if exists "Kograph api keys update by owner" on public.kograph_api_keys;
+
+drop policy if exists "Kograph checkouts readable by owner and admin" on public.kograph_checkouts;
+drop policy if exists "Kograph checkouts insert by owner" on public.kograph_checkouts;
+
+drop policy if exists "Kograph ledger readable by owner and admin" on public.kograph_balance_ledger;
+drop policy if exists "Kograph ledger insert by service role" on public.kograph_balance_ledger;
+
+drop policy if exists "Kograph withdrawals readable by owner and admin" on public.kograph_withdrawals;
+drop policy if exists "Kograph withdrawals insert by owner" on public.kograph_withdrawals;
+drop policy if exists "Kograph withdrawals update by admin" on public.kograph_withdrawals;
+
+drop policy if exists "Kograph audit readable by admin and service role" on public.kograph_audit_logs;
+drop policy if exists "Kograph audit insert by service role" on public.kograph_audit_logs;
+
+drop policy if exists "Notifications readable by owner" on public.kograph_notifications;
+drop policy if exists "Notifications update by owner" on public.kograph_notifications;
+drop policy if exists "Notifications insert by admin/service" on public.kograph_notifications;
+
+-- Re-create policies after dropping them
 
 create policy "Profiles readable by owner and admin" on public.profiles
   for select using (

@@ -16,6 +16,11 @@ CREATE TABLE IF NOT EXISTS public.kograph_notifications (
 
 ALTER TABLE public.kograph_notifications ENABLE ROW LEVEL SECURITY;
 
+-- Drop existing policies if they exist to prevent errors
+DROP POLICY IF EXISTS "Notifications readable by owner" ON public.kograph_notifications;
+DROP POLICY IF EXISTS "Notifications update by owner" ON public.kograph_notifications;
+DROP POLICY IF EXISTS "Notifications insert by admin/service" ON public.kograph_notifications;
+
 CREATE POLICY "Notifications readable by owner" ON public.kograph_notifications
   FOR SELECT USING (auth.uid() = user_id);
 
@@ -30,7 +35,15 @@ CREATE POLICY "Notifications insert by admin/service" ON public.kograph_notifica
   );
 
 -- 3. Update Policies for Profiles (to allow admins to update blocked status)
+DROP POLICY IF EXISTS "Profiles update by admin" ON public.profiles;
+
 CREATE POLICY "Profiles update by admin" ON public.profiles
   FOR UPDATE USING (
     (SELECT role FROM profiles WHERE id = auth.uid()) = 'admin'
   );
+
+-- 4. Add Destination Columns to Withdrawals
+ALTER TABLE public.kograph_withdrawals 
+ADD COLUMN IF NOT EXISTS channel_category TEXT, -- 'bank' or 'ewallet'
+ADD COLUMN IF NOT EXISTS channel_code TEXT,     -- 'BCA', 'GOPAY', etc.
+ADD COLUMN IF NOT EXISTS account_number TEXT;

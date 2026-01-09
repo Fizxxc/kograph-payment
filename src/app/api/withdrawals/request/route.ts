@@ -30,8 +30,25 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => null)
   const amount = Number(body?.amount)
   const note = body?.note ? String(body.note).slice(0, 200) : null
+  const channelCategory = body?.channel_category // 'bank' | 'ewallet'
+  const channelCode = body?.channel_code
+  const accountNumber = body?.account_number
+
   if (!Number.isFinite(amount) || amount <= 0) return NextResponse.json({ error: 'invalid_amount' }, { status: 400 })
+
+  // Validation Limits
+  const minAmount = channelCategory === 'bank' ? 15000 : 1000
+  if (amount < minAmount) {
+    return NextResponse.json({ 
+      error: `min_amount_${minAmount}`, 
+      message: `Minimal penarikan untuk ${channelCategory === 'bank' ? 'Bank' : 'E-Wallet'} adalah Rp ${minAmount.toLocaleString('id-ID')}` 
+    }, { status: 400 })
+  }
+
   if (amount % 1000 !== 0) return NextResponse.json({ error: 'amount_must_be_multiple_of_1000' }, { status: 400 })
+  if (!channelCategory || !channelCode || !accountNumber) {
+    return NextResponse.json({ error: 'incomplete_payment_details' }, { status: 400 })
+  }
 
   const server = getSupabaseServiceClient()
   
@@ -49,6 +66,9 @@ export async function POST(req: Request) {
     amount,
     status: 'requested',
     note,
+    channel_category: channelCategory,
+    channel_code: channelCode,
+    account_number: accountNumber
   }).select().single()
 
   if (error || !withdrawal) return NextResponse.json({ error: 'create_failed' }, { status: 500 })
